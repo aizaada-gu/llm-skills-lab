@@ -1,0 +1,12 @@
+{
+  "name": "LLM Skills Lab",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
+  "hostRequirements": { "cpus": 4, "memory": "16gb" },
+  "features": {
+    "ghcr.io/devcontainers/features/python:1": {},
+    "ghcr.io/devcontainers/features/sshd:1": { "version": "latest" }
+  },
+  "forwardPorts": [8001],
+  "portsAttributes": { "8001": { "label": "Guarded LLM with skills" } },
+  "postCreateCommand": "bash setup.sh"
+}
