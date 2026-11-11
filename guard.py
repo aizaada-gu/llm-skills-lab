@@ -3,26 +3,21 @@
 
 Layer 1: Llama Guard 3 checks the QUESTION. Harmful -> blocked.
 Layer 2: a system prompt makes the chosen model refuse off-topic questions.
-Optional skill: a SKILL.md from ./skills is added to the instructions.
 Layer 3: Llama Guard 3 checks the ANSWER. Harmful -> blocked.
 
 Run in the browser:  python3 guard.py          (open port 8001)
 Run in the terminal: python3 guard.py "your question"
 """
-import glob
 import json
-import os
-import re
 import sys
 import time
 import urllib.request
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 OLLAMA = "http://localhost:11434"
 GUARD_MODEL = "llama-guard3:1b"
-DEFAULT_MODEL = "phi4-mini"
+DEFAULT_MODEL = "llama3.2:1b"
 PORT = 8001
-SKILLS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "skills")
 
 REFUSAL = "Sorry, I can only help with Linux and cybersecurity questions for this course."
 SYSTEM_PROMPT = f"""You are the teaching assistant for a Unix/Linux and cybersecurity course at Gannon University.
@@ -42,8 +37,7 @@ CATEGORIES = {
 
 
 def ask(model, messages):
-    body = json.dumps({"model": model, "messages": messages, "stream": False,
-                       "options": {"num_ctx": 8192}}).encode()  # room for skill text
+    body = json.dumps({"model": model, "messages": messages, "stream": False}).encode()
     req = urllib.request.Request(OLLAMA + "/api/chat", body, {"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=600) as resp:
         return json.load(resp)["message"]["content"].strip()
@@ -60,23 +54,6 @@ def list_models():
     return names
 
 
-def list_skills():
-    """Folder names of skills/<name>/SKILL.md"""
-    return sorted(os.path.basename(os.path.dirname(f))
-                  for f in glob.glob(os.path.join(SKILLS_DIR, "*", "SKILL.md")))
-
-
-def load_skill(name):
-    """SKILL.md text without the YAML header (keeps name + description)."""
-    if not name or name not in list_skills():
-        return ""
-    text = open(os.path.join(SKILLS_DIR, name, "SKILL.md")).read()
-    desc = re.search(r"^description:\s*'?(.*?)'?\s*\n(?=\w+:)", text, re.S | re.M)
-    body = re.sub(r"^---.*?\n---\s*\n", "", text, count=1, flags=re.S)
-    header = f"Skill: {name}\n" + (" ".join(desc.group(1).split()) + "\n" if desc else "")
-    return header + body
-
-
 def guard_check(messages):
     """Returns a list of violated categories ([] means safe)."""
     lines = ask(GUARD_MODEL, messages).splitlines()
@@ -86,16 +63,15 @@ def guard_check(messages):
     return [f"{c} {CATEGORIES.get(c, '')}".strip() for c in codes]
 
 
-def guarded_answer(question, model=DEFAULT_MODEL, skill=""):
+def guarded_answer(question, model=DEFAULT_MODEL):
     start = time.time()
-    result = _guarded(question, model, skill)
+    result = _guarded(question, model)
     result["model"] = model
-    result["skill"] = skill or "none"
     result["seconds"] = round(time.time() - start, 1)
     return result
 
 
-def _guarded(question, model, skill=""):
+def _guarded(question, model):
     user = {"role": "user", "content": question}
 
     bad = guard_check([user])
@@ -103,11 +79,7 @@ def _guarded(question, model, skill=""):
         return {"status": "BLOCKED", "layer": "Llama Guard (question)", "categories": bad,
                 "answer": "This question was blocked by the safety guardrail."}
 
-    system = SYSTEM_PROMPT
-    skill_text = load_skill(skill)
-    if skill_text:
-        system += ("\n\nFollow this expert skill when it is relevant to the question:\n\n" + skill_text)
-    answer = ask(model, [{"role": "system", "content": system}, user])
+    answer = ask(model, [{"role": "system", "content": SYSTEM_PROMPT}, user])
 
     bad = guard_check([user, {"role": "assistant", "content": answer}])
     if bad:
@@ -130,14 +102,9 @@ select{font-size:16px;margin-bottom:8px}textarea{width:100%;height:80px;font-siz
 <h2>Guarded LLM demo</h2>
 <p>Llama Guard checks the question and the answer. The chosen model only answers Linux and cybersecurity questions.</p>
 <label>Model: <select id="m"></select></label>
-<label style="margin-left:12px">Skill: <select id="s"><option value="">none</option></select></label>
 <textarea id="q" placeholder="Ask something..."></textarea><br>
 <button onclick="go()">Ask</button><div id="out"></div>
 <script>
-fetch('skills').then(r=>r.json()).then(ss=>{
-  const sel=document.getElementById('s');
-  ss.forEach(n=>{const o=document.createElement('option');o.value=n;o.textContent=n;sel.appendChild(o);});
-});
 fetch('models').then(r=>r.json()).then(ms=>{
   const sel=document.getElementById('m');
   ms.forEach(n=>{const o=document.createElement('option');o.textContent=n;sel.appendChild(o);});
@@ -145,13 +112,12 @@ fetch('models').then(r=>r.json()).then(ms=>{
 async function go(){
   const q=document.getElementById('q').value; if(!q) return;
   const m=document.getElementById('m').value;
-  const sk=document.getElementById('s').value;
   const out=document.getElementById('out');
   out.insertAdjacentHTML('afterbegin','<div class="card" id="wait">Thinking...</div>');
-  const r=await (await fetch('ask',{method:'POST',body:JSON.stringify({question:q,model:m,skill:sk})})).json();
+  const r=await (await fetch('ask',{method:'POST',body:JSON.stringify({question:q,model:m})})).json();
   document.getElementById('wait').remove();
   const div=document.createElement('div'); div.className='card '+r.status;
-  div.textContent='Model: '+r.model+'   Skill: '+r.skill+'   ('+r.seconds+' seconds)\\nQ: '+q+'\\n\\n['+r.status+']  Guardrail: '+r.layer+
+  div.textContent='Model: '+r.model+'   ('+r.seconds+' seconds)\\nQ: '+q+'\\n\\n['+r.status+']  Guardrail: '+r.layer+
     (r.categories.length?'  ('+r.categories.join(', ')+')':'')+'\\n\\n'+r.answer;
   out.prepend(div);
 }
@@ -160,9 +126,7 @@ async function go(){
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
-        if self.path.startswith("/skills"):
-            self._send(200, "application/json", json.dumps(list_skills()).encode())
-        elif self.path.startswith("/models"):
+        if self.path.startswith("/models"):
             self._send(200, "application/json", json.dumps(list_models()).encode())
         else:
             self._send(200, "text/html", PAGE.encode())
@@ -170,13 +134,11 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         data = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         try:
-            result = guarded_answer(data["question"], data.get("model") or DEFAULT_MODEL,
-                                    data.get("skill") or "")
+            result = guarded_answer(data["question"], data.get("model") or DEFAULT_MODEL)
         except Exception as e:  # e.g. Ollama not running
             result = {"status": "ERROR", "layer": "-", "categories": [], "answer": str(e),
-                      "model": data.get("model"), "skill": data.get("skill") or "none", "seconds": 0}
-        print(f"[{result['status']}] {result['model']} + skill {result['skill']} "
-              f"({result['seconds']}s): {data['question']}", flush=True)
+                      "model": data.get("model"), "seconds": 0}
+        print(f"[{result['status']}] {result['model']} ({result['seconds']}s): {data['question']}", flush=True)
         self._send(200, "application/json", json.dumps(result).encode())
 
     def _send(self, code, ctype, body):
@@ -192,9 +154,8 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     if len(sys.argv) > 1:
         # python3 guard.py "question"   or   MODEL=phi4-mini python3 guard.py "question"
-        # SKILL=hardening-linux-endpoint-with-cis-benchmark python3 guard.py "question"
-        print(json.dumps(guarded_answer(" ".join(sys.argv[1:]), os.environ.get("MODEL", DEFAULT_MODEL),
-                                        os.environ.get("SKILL", "")), indent=2))
+        import os
+        print(json.dumps(guarded_answer(" ".join(sys.argv[1:]), os.environ.get("MODEL", DEFAULT_MODEL)), indent=2))
     else:
         print(f"Open port {PORT} (Ports tab in Codespaces). Ctrl+C to stop.")
-        ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
+        HTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
